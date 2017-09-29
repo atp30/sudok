@@ -18,64 +18,143 @@
 
 {-# LANGUAGE
     NoImplicitPrelude,
-    TemplateHaskell #-}
+    TupleSections,
+    TypeFamilies,
+
+    TemplateHaskell,
+
+    DeriveFunctor,
+    DeriveFoldable,
+    DeriveTraversable
+
+#-}
+
 module Main where
 
 import ClassyPrelude
 import Data.Array
-import Data.Lens
+import Data.Traversable (mapAccumL)
+import Control.Lens
 import Data.Array.Lens
-import Data.Function (&)
+import Data.Function ((&))
+import Data.Text.IO (interact)
+import qualified Data.Foldable as F
 
-main :: IO ()
-main = putStrLn "Hello, Haskell!"
 
 
--- we need to be able to index an arbitrary column by
--- other elements in the same row, column, and box
+-- A Traversable Version of Zip
+-- From SO:
+-- https://stackoverflow.com/questions/41522422/whats-the-most-standard-generic-way-to-zip-a-traversable-with-a-list
+tzipWith f xs ys = val
+    where Just val = sequenceA . snd . mapAccumL pair (F.toList xs) $ ys
+          pair [] y = ([],Nothing)
+          pair (x:xs) y = (xs, Just $ f x y)
+
+initSet :: Set Value
+initSet = setFromList ['1'..'9']
+
+
+-- Basic Container Types
 type Value = Char
+type Remaining = (Array Int (Set Value))
 
-newtype Remaining = Remaining (Array Int (Set Value))
+-- BoardIndex Types - allow us to map over rows, columns and boxes
+-- we need to be able to BoardIndex an arbitrary column by
+-- other elements in the same row, column, and box
+data GenBoardIndex a = BoardIndex { _row::a, _col::a, _box::a}
+     deriving (Functor,Foldable,Traversable,Show)
 
-data Index = Index { _row::Int, _col::Int, _box::Int}
-makeLenses ''Index
+type instance Element (GenBoardIndex a) = a
 
-data BoardLookups = BL {
-        _rows :: Remaining,
-        _cols :: Remaining,
-        _boxes :: Remaining
-     }
-makeLenses ''BoardLookups
+instance MonoFunctor (GenBoardIndex a)
+instance MonoFoldable (GenBoardIndex a)
+instance MonoTraversable (GenBoardIndex a)
+makeLenses ''GenBoardIndex
 
+type BoardIndex        = GenBoardIndex Int
+type BoardLookups = GenBoardIndex Remaining
+
+-- Board
 data Board = Board {
-     _values :: Array Index (Maybe Value),
+     _values :: Array (Int,Int) (Maybe Value),
      _lookups :: BoardLookups
      }
+
 makeLenses ''Board
 
-makeIndex :: Int -> Int  -> Index
-makeIndex a b
-    | a < 1 || a > 9 = error "bad index"
-    | b < 1 || b > 9 = error "bad index"
-    | otherwise      = Index a b $ (a`div`3)*3+(b`div`3)
+instance Show Board where
+   show b = let arr = (b^.values)
+            in zipWith (\a b -> map (a,) b) [1..9] (repeat [1..9])
+             & map (map (foldr const '.' . (arr!)))
+             & unlines
+
+emptyboard = Board (listArray ((1,1),(9,9)) (repeat Nothing))
+                   (BoardIndex s s s)
+           where s = listArray (1,9) (repeat initSet)
+
+makeBoardIndex :: Int -> Int  -> BoardIndex
+makeBoardIndex a b
+    | a < 1 || a > 9 = error "bad BoardIndex"
+    | b < 1 || b > 9 = error "bad BoardIndex"
+    | otherwise      = BoardIndex a b $ (((a-1)`div`3)*3+((b-1)`div`3)+1)
 
 
-possibles :: Index -> Board -> Maybe (Set Value)
-possibles index board = 
-    case (board ^. values . ix index) of
-         Just _ -> Nothing
-         Nothing -> Just $
-            (board ^. lookups . rows . ix (index ^. row))
-              `itersection`
-            (board ^. lookups .cols . ix (index ^. col))
-              `itersection`
-            (board ^. lookups . boxes . ix (index ^. box))
+possibles :: Board -> BoardIndex -> Maybe (Set Value)
+possibles board index = 
+    case (board ^? values . ix (index^.row,index^.col)) of
+         Just Nothing -> Just $
+            foldl' intersection initSet $
+             tzipWith (\a b -> a ^. ix b) (board ^. lookups) index
+         _ -> Nothing
 
-play :: Index -> Value -> Board -> Board
-play index value board = board
-     & set (values.ix index._Just) value
-     & over (rows.ix (index^.row)) (delete value)
-     & over (cols.ix (index^.col)) (delete value)
-     & over (boxes.ix (index^.box)) (delete value)
+play :: Board -> (BoardIndex,Value) -> Board
+play board (index,value) = board
+     & set (values.ix (index^.row,index^.col)) (Just value)
+     & over lookups ( 
+         tzipWith (\ind -> over (ix ind) (deleteSet value)) index )
+
+allIndices :: [BoardIndex]
+allIndices = liftA2 (makeBoardIndex) idxs idxs
+   where  idxs :: [Int]
+          idxs = [1..9]
+
+-- Is there a Lensy way to do this?
+iterate :: Board -> Either (Either Board Board) Board
+iterate b | not (null plays)  = Right $ foldl' play b plays
+          | F.all isJust (b^.values) = Left (Right b)
+          | otherwise = Left $ Left b 
+  where plays :: [(BoardIndex,Value)]
+        plays = allIndices
+              & map (\x -> possibles b x >>= return . (x,))
+              & map (\x -> do
+                   (l,r) <- x
+                   guard (length r == 1)
+                   r1 <- foldr (const.Just) Nothing r 
+                   return (l,r1)
+                )
+              & catMaybes
 
 
+makeplays :: Board -> Board 
+makeplays b = 
+  case iterate b of
+      Right b2 ->  makeplays b2
+      Left (Right x) -> x
+      Left (Left x) -> error (show x)
+
+readboard :: Text -> Board
+readboard t = foldl' play emptyboard lns
+  where lns = lines t
+            & map (map toVal . unpack) 
+            & map ix1
+            & ix2
+            & concatMap (map (first (uncurry makeBoardIndex)))
+        toVal '.' = Nothing
+        toVal c = Just c
+        ix1 :: [Maybe a] -> [Maybe (Int,a)]
+        ix1 = zipWith (\a b -> (a,)<$> b) [1..9]
+        ix2 = zipWith (\a b -> catMaybes b & map (first (a,))) [1..9]
+        
+
+main :: IO ()
+main =  interact (pack . show . makeplays . readboard)

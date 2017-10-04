@@ -77,6 +77,8 @@ class (Foldable s, Traversable s) => Game s a where
       traverser :: Traversal (s (Maybe a)) (s (Maybe a)) (Maybe a) (Maybe a)
       traverser = traversed
 
+      
+
 play :: Game s a => (Maybe a->Maybe a) ->  s (Maybe a) -> s (Maybe a)
 play = over traverser 
 --
@@ -102,3 +104,33 @@ data Hueristic c s a =
 --  A failure exit condition
 --  A success exit condition
 
+-- want stateT - state needs to remain in place, m
+
+
+type Player b m x = StateT (Maybe b) m (Play x) 
+
+data Play i v = Play {index :: i, value :: v}
+
+
+class MonadPlayer m where
+   won   :: m a -> Bool
+   -- Indicate a play, get back a load of plays
+   plays :: Play i v -> m [Play i v]
+
+whileM :: (a -> Bool) -> m a -> m [a]
+whileM p m = do
+     x <- m
+     if p x then (x:)<$>whileM p m
+            else return []
+
+instance (MonadPlayer m, Wrapper p) => MonadPlayer p m where
+   plays = return . fmap concatMap . whileM (not.null)
+
+wrap :: (Playable a, Player m) => m a -> m (f a)
+
+class Movable board s
+
+class Player piece board s where  
+   play :: 
+
+-- Ga

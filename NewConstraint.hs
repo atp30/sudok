@@ -7,34 +7,20 @@
     ConstraintKinds,
     FlexibleContexts,
     GeneralizedNewtypeDeriving,
-    ExplicitForAll
+    ExplicitForAll,
+    TupleSections
 #-}
 
 module NewConstraint (
-       Continuation(Win,Continue),foldPlays,
        Board,Space,Piece,Move,serialise,playBoard,spaces,pieces,
        Game,GameBoard,raise,options,updates,nextplays,open,localSetup,
-       makeGame, emptyBoard, runGame,
+       makeGame, emptyBoard, runGame, execGame,lose,won,
+       sequenceMoves, -- SHOULD NOT BE EXPORTED !!!
        BoardGame(BoardGame),Failable
        ) where
 
 import ClassyPrelude
 import Control.Monad.State
-
-
--- Game Winning
----------------
--- Losing should be carried in a foldable monadplus (see below)
-data Continuation = Win | Continue deriving Show
-instance Monoid Continuation where
-  mempty = Continue
-  mappend Win _ = Win
-  mappend _ Win = Win
-  mappend _ _ = Continue
-
-foldPlays :: Monoid x => (Continuation,x) -> (Continuation,x) -> (Continuation,x)
-foldPlays (Win,x) _ = (Win,x)
-foldPlays c c' = mappend c c'
 
 -- Games
 --------
@@ -67,6 +53,8 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    default setUp :: StackedGame t m1 m => (GameBoard m) -> m()
    setUp xs = lift (setUp xs) >> localSetup >> updates (serialise xs) >> return ()
 
+   won ::  m Bool
+   won = null <$> open
 
    options :: Space (GameBoard m) -> m (Set (Piece (GameBoard m)))
    default options :: StackedGame t m1 m =>
@@ -78,8 +66,8 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    open = lift open
 
    -- updates should never call a lifted function
-   updates :: [Move (GameBoard m)] -> m Continuation
-   updates _ = return Continue
+   updates :: [Move (GameBoard m)] -> m ()
+   updates _ = return ()
 
    -- Rules ::
    -- This needs to be a READ ONLY action.
@@ -98,29 +86,31 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    default raise :: StackedGame t m1 m => (GameBoard m -> x) -> m x
    raise = lift . raise 
 
-   play :: Move (GameBoard m) -> m Continuation
-   default play :: StackedGame t m1 m => Move (GameBoard m) -> m Continuation
-   play x = liftM2 mappend (updates $ return x) (lift $ play x)
+   play :: Move (GameBoard m) -> m ()
+   default play :: StackedGame t m1 m => Move (GameBoard m) -> m ()
+   play x = liftM2 mappend (lift $ play x) (updates $ return x) 
    
-   sequenceMoves :: m (Continuation,[Move (GameBoard m)])
+   sequenceMoves :: m [Move (GameBoard m)]
    default sequenceMoves :: StackedGame t m1 m =>
-            m (Continuation,[Move (GameBoard m)])
+            m [Move (GameBoard m)]
    sequenceMoves = do
-     plays <- nextplays
-     if null plays
-        then return (Continue,[])
-        else do
-          output <- sequence $ flip map plays $ \m -> do
-                  c1 <- play m 
-                  (c2,moves) <- lift sequenceMoves
-                  return $ foldPlays (c1,[m]) (c2,moves)
-          case foldl' foldPlays mempty output of
-                  (Win,x) -> return (Win,x)
-                  (Continue,x) -> foldPlays (Continue,x) <$> sequenceMoves
+     w <- won
+     if w then return []
+     else do
+            plays <- nextplays
+            xs <- foldr (\move rest -> do
+                                  w <- won
+                                  if w then return []
+                                       else do play move
+                                               fmap (move:) rest)
+                              (lift sequenceMoves) 
+                              plays
+            if null xs then return xs
+                       else (xs++)<$>sequenceMoves
      
-   lose :: m ()
-   default lose :: StackedGame t m1 m => m ()
-   lose = lift lose
+   lose :: Monoid a =>  m a
+   default lose :: (StackedGame t m1 m, Monoid a) => m a
+   lose = lift lose  
 
 
 -- Promoting a Board to a Game
@@ -131,29 +121,25 @@ type Failable m = (MonadPlus m, Foldable m)
 newtype BoardGame b m a = BoardGame (StateT b m a)
         deriving (Functor,Applicative,Monad,Alternative, MonadPlus)
 
-runGame :: forall m . forall b . forall a . (Monad m, Board b) =>  BoardGame b m a -> m b
-runGame (BoardGame t) = execStateT t emptyBoard
+runGame :: forall m . forall b . forall a . (Monad m, Board b) =>  BoardGame b m a -> m (a,b) 
+runGame (BoardGame t) = runStateT t emptyBoard
 
+execGame :: forall m . forall b . forall a . (Monad m, Board b) =>  BoardGame b m a -> m b
+execGame (BoardGame t) = execStateT t emptyBoard
 
 instance (Board b, Failable m) => Game (BoardGame b m) where
          type GameBoard (BoardGame b m) = b
-
              
          setUp b = BoardGame $ put b
-
          raise f = BoardGame $ f <$> get
          open = raise spaces
          options _ = raise pieces
          updates xs = BoardGame (mapM (modify.playBoard) xs)
-                   >> return Continue
+                   >> return ()
          play = updates . return
-         sequenceMoves = return (Continue,[])
-         lose = BoardGame $ lift mzero
+         sequenceMoves = return []
+         lose = BoardGame $ lift mzero >> return mempty
 
          
-makeGame :: ( Game m, Board b, b ~ GameBoard m ) => b -> m (Continuation,GameBoard m)
-makeGame b = do
-   setUp b
-   (c,_) <- sequenceMoves
-   endgame <- raise id
-   return (c,endgame)
+makeGame :: ( Game m, Board b, b ~ GameBoard m ) => b -> m [Move b] 
+makeGame b = setUp b >> (raise id) >> sequenceMoves 

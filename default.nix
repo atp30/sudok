@@ -1,7 +1,8 @@
 # require a package set and a haskell package set
 {pkgs ? import <nixpkgs> {},
- haskellPackages ? pkgs.haskellPackages,
- cabal2nixargs ? ""
+ haskellPackages ? pkgs.haskell.packages.ghc821,
+ cabal2nixargs ? "",
+ src ? ./.
  }:
 
  # read a cabal file
@@ -9,8 +10,7 @@ let
      cabal_nix_output = pkgs.stdenv.mkDerivation {
         name = "cabal_nix_output";
         builder = pkgs.writeText "build.sh" "$cabal2nix/bin/cabal2nix $cabal2nixargs $src > $out";
-        src = ./.;
-        inherit cabal2nixargs;
+        inherit cabal2nixargs src;
         # src = pkgs.lib.sourceFilesBySuffices ./. [".cabal"];
         inherit (pkgs) cabal2nix;
      };

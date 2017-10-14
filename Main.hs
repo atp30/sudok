@@ -1,160 +1,229 @@
--- A Sudoku Solver
-
--- An excercise
---      solve a problem I haven't tried before
---      become more comfortable with lenses
-
--- Reads a game from stdin
--- format : directly encode with . for blanks
--- >...26.7.1
--- >68..7..9.
--- >19...45..
--- >82.1...4.
--- >..46.29..
--- >.5...3.28
--- >..93...74
--- >.4..5..36
--- >7.3.18...
 
 {-# LANGUAGE
-    NoImplicitPrelude,
+    MultiParamTypeClasses,
     TupleSections,
+    ScopedTypeVariables,
+
     TypeFamilies,
-
-    TemplateHaskell,
-
-    DeriveFunctor,
-    DeriveFoldable,
-    DeriveTraversable
-
+    TypeApplications,
+    GeneralizedNewtypeDeriving
 #-}
 
 module Main where
 
+import Games.Sudok.Constraints
+
+import Data.Proxy
 import ClassyPrelude
-import Data.Array
-import Data.Traversable (mapAccumL)
-import Control.Lens
-import Data.Array.Lens
-import Data.Function ((&))
-import Data.Text.IO (interact)
+-- TODO get rid of head
+import Prelude (readsPrec,read,interact,head)
 import qualified Data.Foldable as F
 
+import Control.Monad.State.Class
+import Control.Monad.State hiding (sequence_, mapM_)
+import Control.Monad.Trans
+
+import Control.Arrow hiding (first,second)
+import Data.Function ((&))
 
 
--- A Traversable Version of Zip
--- From SO:
--- https://stackoverflow.com/questions/41522422/whats-the-most-standard-generic-way-to-zip-a-traversable-with-a-list
-tzipWith f xs ys = val
-    where Just val = sequenceA . snd . mapAccumL pair (F.toList xs) $ ys
-          pair [] y = ([],Nothing)
-          pair (x:xs) y = (xs, Just $ f x y)
+main = interact (   read @Sudoku
+                >>> makeGame 
 
-initSet :: Set Value
-initSet = setFromList ['1'..'9']
+                >>> makeguesses
+                >>> trim row
+                >>> trim column
+                >>> trim box
+                >>> removePlayed
+                >>> execGame @[]
+                >>> foldr const emptyBoard
+                >>> show
+                 )
 
+-- Basic Digit Type -- represents numbers from 1 to 9
+-----------------------------------------------------
+-- Need To use Digits from zero to nine in two places, so make a generic type
+newtype Digit = Digit Int deriving (Ord,Eq)
 
--- Basic Container Types
-type Value = Char
-type Remaining = (Array Int (Set Value))
+instance Bounded Digit where
+         minBound = Digit 1
+         maxBound = Digit 9
 
--- BoardIndex Types - allow us to map over rows, columns and boxes
--- we need to be able to BoardIndex an arbitrary column by
--- other elements in the same row, column, and box
-data GenBoardIndex a = BoardIndex { _row::a, _col::a, _box::a}
-     deriving (Functor,Foldable,Traversable,Show)
+instance Show Digit where
+     show (Digit i) = show i
 
-type instance Element (GenBoardIndex a) = a
+instance Read Digit where
+     readsPrec _ [] = []
+     readsPrec _ (x:xs)
+          | x `elem` ['1'..'9'] = [(Digit $ read [x],xs)]
+          | otherwise       = []
 
-instance MonoFunctor (GenBoardIndex a)
-instance MonoFoldable (GenBoardIndex a)
-instance MonoTraversable (GenBoardIndex a)
-makeLenses ''GenBoardIndex
+mkDigit :: Int -> Maybe Digit
+mkDigit x | x >= 1 && x <= 9 = Just $ Digit x
+          | otherwise = Nothing
 
-type BoardIndex        = GenBoardIndex Int
-type BoardLookups = GenBoardIndex Remaining
-
--- Board
-data Board = Board {
-     _values :: Array (Int,Int) (Maybe Value),
-     _lookups :: BoardLookups
-     }
-
-makeLenses ''Board
-
-instance Show Board where
-   show b = let arr = (b^.values)
-            in zipWith (\a b -> map (a,) b) [1..9] (repeat [1..9])
-             & map (map (foldr const '.' . (arr!)))
-             & unlines
-
-emptyboard = Board (listArray ((1,1),(9,9)) (repeat Nothing))
-                   (BoardIndex s s s)
-           where s = listArray (1,9) (repeat initSet)
-
-makeBoardIndex :: Int -> Int  -> BoardIndex
-makeBoardIndex a b
-    | a < 1 || a > 9 = error "bad BoardIndex"
-    | b < 1 || b > 9 = error "bad BoardIndex"
-    | otherwise      = BoardIndex a b $ (((a-1)`div`3)*3+((b-1)`div`3)+1)
+digits = map Digit [1..9]
 
 
-possibles :: Board -> BoardIndex -> Maybe (Set Value)
-possibles board index = 
-    case (board ^? values . ix (index^.row,index^.col)) of
-         Just Nothing -> Just $
-            foldl' intersection initSet $
-             tzipWith (\a b -> a ^. ix b) (board ^. lookups) index
-         _ -> Nothing
+-- Derived Types, representing squares on the board
+---------------------------------------------------
+newtype Value = Value Digit deriving (Read,Ord,Eq)
+instance Show Value where show (Value x) = show x
+values :: Set Value
+values = setFromList $ map Value digits
 
-play :: Board -> (BoardIndex,Value) -> Board
-play board (index,value) = board
-     & set (values.ix (index^.row,index^.col)) (Just value)
-     & over lookups ( 
-         tzipWith (\ind -> over (ix ind) (deleteSet value)) index )
+newtype Square = Square (Digit,Digit) deriving (Read,Show,Ord,Eq,Bounded)
+squares :: Set Square
+squares = setFromList $ map Square (liftM2 (,) digits digits)
 
-allIndices :: [BoardIndex]
-allIndices = liftA2 (makeBoardIndex) idxs idxs
-   where  idxs :: [Int]
-          idxs = [1..9]
-
--- Is there a Lensy way to do this?
-iterate :: Board -> Either (Either Board Board) Board
-iterate b | not (null plays)  = Right $ foldl' play b plays
-          | F.all isJust (b^.values) = Left (Right b)
-          | otherwise = Left $ Left b 
-  where plays :: [(BoardIndex,Value)]
-        plays = allIndices
-              & map (\x -> possibles b x >>= return . (x,))
-              & map (\x -> do
-                   (l,r) <- x
-                   guard (length r == 1)
-                   r1 <- foldr (const.Just) Nothing r 
-                   return (l,r1)
-                )
-              & catMaybes
+newtype Sudoku = Sudoku (Map Square Value)  deriving (Monoid)
+instance Show Sudoku where
+   show (Sudoku bs) = digits
+           & map ((\a -> (a,)<$> digits)
+               >>>concatMap (\x -> case lookup (Square x) bs of
+                              Nothing -> "."
+                              Just x -> show x
+                            ))
+           & unlines
 
 
-makeplays :: Board -> Board 
-makeplays b = 
-  case iterate b of
-      Right b2 ->  makeplays b2
-      Left (Right x) -> x
-      Left (Left x) -> error (show x)
+-- Not a well behaved instance - messes with the remaining string
+instance Read Sudoku where
+   readsPrec _ xs = filter (`elem`('.':['1'..'9'])) xs
+                  & splitAt 81
+                  & first ( zip (Square <$> liftM2 (,) digits digits)
+                        >>> filter ((/='.').snd)
+                        >>> map (second (Value .read.return))
+                        >>> mapFromList
+                        >>> Sudoku)
+                  & return
 
-readboard :: Text -> Board
-readboard t = foldl' play emptyboard lns
-  where lns = lines t
-            & map (map toVal . unpack) 
-            & map ix1
-            & ix2
-            & concatMap (map (first (uncurry makeBoardIndex)))
-        toVal '.' = Nothing
-        toVal c = Just c
-        ix1 :: [Maybe a] -> [Maybe (Int,a)]
-        ix1 = zipWith (\a b -> (a,)<$> b) [1..9]
-        ix2 = zipWith (\a b -> catMaybes b & map (first (a,))) [1..9]
-        
+instance Board Sudoku where
+    type Space Sudoku = Square
+    type Piece Sudoku = Value
+    serialise (Sudoku m) = mapToList m
+    playBoard (sp,pc) (Sudoku m) = Sudoku $ insertMap sp pc m
+    spaces (Sudoku m) = squares
+    pieces (Sudoku m) = values
+    emptyBoard = Sudoku mempty
 
-main :: IO ()
-main =  interact (pack . show . makeplays . readboard)
+type GSpace m = Space (GameBoard m)
+type GPiece m = Piece (GameBoard m)
+
+-- Remove Games Already Played
+removePlayed :: (Game m, sq ~ GSpace m)
+        => RemovePlayed sq m a -> m a
+removePlayed (RemovePlayed t) = evalStateT t mempty
+
+newtype RemovePlayed sq m a = RemovePlayed (StateT (Set sq) m a)
+   deriving (Functor,Applicative,Alternative,
+             Monad,MonadPlus,
+             MonadTrans, MonadState (Set sq))
+instance (Game m, GSpace m ~ sq, sq ~ GSpace (RemovePlayed sq m))
+      => Game (RemovePlayed sq m) where
+   type GameBoard (RemovePlayed sq m) = GameBoard m
+   options s = do
+       m <- get
+       if s `elem` m then mzero else lift $ options s 
+   updates [] = return ()
+   updates ((sq,pc):xs) = do
+       o <- options sq
+       guard (pc `elem` o)
+       g <- get
+       guard $ not (sq `elem` g)
+       modify $ insertSet sq
+       s <- raise spaces
+       if length g >= length s
+           then return ()
+           else updates xs
+
+   open = do
+       sp <- lift open
+       played <- get
+       return $ sp `difference` played
+
+-- Dealing with Rows, Columns and the LIke. Make a class of VIEWS
+-- =================================================================
+class View a x where
+         view :: a -> x
+
+newtype Column = Column Digit deriving (Read,Show,Ord,Eq)
+instance View Square Column where view (Square (x,_)) = Column x
+column = Proxy :: Proxy Column
+
+newtype Row = Row Digit deriving (Read,Show,Ord,Eq)
+instance View Square Row where view (Square (_,y)) = Row y
+row = Proxy :: Proxy Row
+
+newtype Box = Box Digit deriving (Read,Show,Ord,Eq)
+instance View Square Box where
+   view    (Square (Digit x, Digit y)) = Box $ Digit (((x-1)`div`3)*3+((y-1)`div`3)+1)
+box = Proxy :: Proxy Box
+
+trim :: (View sq x, Game m, sq ~ GSpace m, v ~ GPiece m, Ord x)
+        => Proxy x -> TrimOptions x sq v m a -> m a
+trim Proxy (TrimOptions t) = evalStateT t mempty
+
+newtype TrimOptions x sq v m a = TrimOptions (StateT (Map x (Set v)) m a)
+   deriving (Functor,Applicative,Alternative,
+             Monad,MonadPlus,
+             MonadTrans, MonadState (Map x (Set v)))
+instance (Game m, GSpace m ~ sq, GPiece m ~ v, View sq x, Ord x)
+         => Game (TrimOptions x sq v m) where
+    type GameBoard (TrimOptions x sq v m) = GameBoard m
+    localSetup = do
+        -- get the defaultSetup
+        p <- raise spaces
+        q <- raise pieces
+        put mempty
+        flip mapM_ (setToList p) $ \x -> modify (insertWith const (view x) q)
+
+    updates xs = 
+        fmap concat $ flip mapM xs $ \(sq,v) -> do
+             x <- get
+             let m = foldr const mempty $ lookup (view sq) x
+             if  v `elem` m then do
+                 modify $ insertWith (flip difference) (view sq) (setFromList [v])
+             else lose 
+
+    options x = do
+          opts <- lift $ options x
+          r2 <- foldr const mempty . lookup (view x) <$> get
+          return $ opts `intersection` r2
+
+
+
+newtype MultiContainer m a = MC (m a)
+    deriving (Functor,Applicative,Alternative,Monad, MonadPlus)
+
+instance MonadTrans MultiContainer where
+    lift = MC 
+
+instance Game m => Game (MultiContainer m) where
+    type GameBoard (MultiContainer m) = GameBoard m
+    nextplays = do
+      w <- won
+      if w then return []
+      else do
+        -- opts <- take 1 . setToList <$>  open
+        opts <- setToList <$> open 
+        opt2s <- mapM (\x -> map (x,) $ options x) opts
+                  :: MultiContainer m [(GSpace m,Set (GPiece m))]
+        let opt3s = dropWhile (null.snd) $ sortOn (length.snd) opt2s
+        case takeWhile ((==1).length.snd) opt3s of
+              [] -> do -- NEED TO CHECK IF WE'VE WON
+                    (a,y) <- foldr const mzero $ map return opt3s
+                    foldr (mplus.return) mzero $ fmap (return.(a,)) $ setToList y
+                -- (a,y) <- foldr (const.return) mzero opt3s
+                -- foldr (mplus.return) mzero $ fmap (\b->[(a,b)]) $ setToList y
+              xs  -> return $  concatMap (\(x,y)->(x,)<$>setToList y) xs 
+        -- return $  map (second $ Prelude.head . setToList)
+        --        $  opt3s
+
+makeguesses :: MultiContainer m a -> m a
+makeguesses (MC m)  = m
+
+-- newtype M m a = MCA {runM :: m a} deriving (Functor,Applicative,Alternative,Monad,MonadPlus)
+-- instance MonadTrans M where lift f = MCA $ f
+-- instance Game m => Game (M m) where
+--   type GameBoard (M m) = GameBoard m

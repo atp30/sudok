@@ -11,7 +11,7 @@
     TupleSections
 #-}
 
-module NewConstraint (
+module Games.Sudok.Constraints (
        Board,Space,Piece,Move,serialise,playBoard,spaces,pieces,
        Game,GameBoard,raise,options,updates,nextplays,open,localSetup,
        makeGame, emptyBoard, runGame, execGame,lose,won,

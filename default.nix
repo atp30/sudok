@@ -2,7 +2,7 @@
 {pkgs ? import <nixpkgs> {},
  haskellPackages ? pkgs.haskell.packages.ghc821,
  cabal2nixargs ? "",
- src ? ./.
+ src ? pkgs.lib.cleanSource ./.
  }:
 
  # read a cabal file

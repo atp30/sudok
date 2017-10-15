@@ -24,7 +24,7 @@ to a bug in GHC8.02, so mileage on lesser versions may vary.
 If you have the nix package manager, a `nix-build` or `nix-shell` command should
 be adequate - the derivations read from the cabal file.
 
-Currently, there are three test files. Run the solver on them by:
+Currently, there are five test files. Run the solver on them by:
 
 ```
 git clone https://github.com/atp30/sudok.git
@@ -35,5 +35,7 @@ sudoku < tests/test2.txt
 sudoku < tests/very_hard.txt
 ```
 
-Currently, `test1.txt` is solved entirely deterministically. `test2.txt` should
-also be in future. `very_hard.txt` requires trial and error.
+Currently, `test1.txt` and `test2.txt` are solved entirely deterministically.
+`very_hard.txt` requires trial and error. I am uncertain about the others,
+although it seems as though some trial and error may be used, based on times.
+

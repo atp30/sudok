@@ -14,8 +14,7 @@
 module Games.Sudok.Constraints (
        Board,Space,Piece,Move,serialise,playBoard,spaces,pieces,
        Game,GameBoard,raise,options,updates,nextplays,open,localSetup,
-       makeGame, emptyBoard, runGame, execGame,lose,won,
-       sequenceMoves, -- SHOULD NOT BE EXPORTED !!!
+       makeGame, emptyBoard, runGame, execGame, lose, won,
        BoardGame(BoardGame),Failable
        ) where
 
@@ -24,7 +23,6 @@ import Control.Monad.State
 
 -- Games
 --------
-
 type Move b = (Space b,Piece b)
 
 class (Eq (Space b),Eq (Piece b), Ord (Space b), Ord (Piece b))
@@ -38,23 +36,15 @@ class (Eq (Space b),Eq (Piece b), Ord (Space b), Ord (Piece b))
    emptyBoard :: b
 
 type StackedGame t m1 m =
-    (m ~ t m1, MonadTrans t, Game m1, Game (t m1),
+    (m ~ (t m1), MonadTrans t, Game m1, Game (t m1),
     GameBoard (t m1) ~ GameBoard m1)
 
 -- The Game Class
-
 class (MonadPlus m, Board (GameBoard m)) => Game m where
    type GameBoard m :: *
 
    localSetup :: m ()
    localSetup = return ()
-   
-   setUp :: (GameBoard m) -> m ()
-   default setUp :: StackedGame t m1 m => (GameBoard m) -> m()
-   setUp xs = lift (setUp xs) >> localSetup >> updates (serialise xs) >> return ()
-
-   won ::  m Bool
-   won = null <$> open
 
    options :: Space (GameBoard m) -> m (Set (Piece (GameBoard m)))
    default options :: StackedGame t m1 m =>
@@ -69,18 +59,15 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    updates :: [Move (GameBoard m)] -> m ()
    updates _ = return ()
 
-   -- Rules ::
-   -- This needs to be a READ ONLY action.
-   -- i.e. forall m, nextplays >> m == m
-   -- ?? Can this be enforced through the type system ??
-   -- NextPlays should have no effect
-   -- nextplays >> m === m
    nextplays :: m [Move (GameBoard m)] 
    nextplays = return []
 
    -- The Two functions below are not exported!
    -- Play is internal - is not to be exported. Therefore, all Instances
    -- Either need to be monad transformers, or defined via Board
+   setUp :: (GameBoard m) -> m ()
+   default setUp :: StackedGame t m1 m => (GameBoard m) -> m()
+   setUp xs = lift (setUp xs) >> localSetup >> updates (serialise xs) >> return ()
 
    raise :: (GameBoard m -> x) -> m x
    default raise :: StackedGame t m1 m => (GameBoard m -> x) -> m x
@@ -98,12 +85,12 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
      if w then return []
      else do
             plays <- nextplays
-            xs <- foldr (\move rest -> do
+            xs <- reverse <$> foldl' (\moves nextmove -> do
                                   w <- won
                                   if w then return []
-                                       else do play move
-                                               fmap (move:) rest)
-                              (lift sequenceMoves) 
+                                       else do play nextmove 
+                                               fmap (nextmove:) moves)
+                              (reverse <$> lift sequenceMoves) 
                               plays
             if null xs then return xs
                        else (xs++)<$>sequenceMoves
@@ -113,9 +100,11 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    lose = lift lose  
 
 
+won :: Game m => m Bool
+won = null <$> open
+
 -- Promoting a Board to a Game
 ------------------------------
-
 type Failable m = (MonadPlus m, Foldable m)
 
 newtype BoardGame b m a = BoardGame (StateT b m a)
@@ -130,15 +119,14 @@ execGame (BoardGame t) = execStateT t emptyBoard
 instance (Board b, Failable m) => Game (BoardGame b m) where
          type GameBoard (BoardGame b m) = b
              
-         setUp b = BoardGame $ put b
-         raise f = BoardGame $ f <$> get
-         open = raise spaces
-         options _ = raise pieces
-         updates xs = BoardGame (mapM (modify.playBoard) xs)
-                   >> return ()
-         play = updates . return
+         setUp b       = BoardGame $ put b
+         raise f       = BoardGame $ f <$> get
+         open          = raise spaces
+         options _     = raise pieces
+         updates xs    = BoardGame (mapM (modify.playBoard) xs) >> return ()
+         play          = updates . return
          sequenceMoves = return []
-         lose = BoardGame $ lift mzero >> return mempty
+         lose          = BoardGame $ lift mzero >> return mempty
 
          
 makeGame :: ( Game m, Board b, b ~ GameBoard m ) => b -> m [Move b] 

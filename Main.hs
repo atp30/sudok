@@ -29,8 +29,10 @@ import Data.Function ((&))
 
 main = interact (   read @Sudoku
                 >>> makeGame 
-
                 >>> makeguesses
+                >>> placeOnly row
+                >>> placeOnly column
+                >>> placeOnly box
                 >>> trim row
                 >>> trim column
                 >>> trim box
@@ -76,6 +78,10 @@ newtype Square = Square (Digit,Digit) deriving (Read,Show,Ord,Eq,Bounded)
 squares :: Set Square
 squares = setFromList $ map Square (liftM2 (,) digits digits)
 
+intercalateThrees :: a -> [a] -> [a]
+intercalateThrees n (a:b:c:d:xs) = a:b:c:n:intercalateThrees n (d:xs)
+intercalateThrees _ xs = xs
+
 newtype Sudoku = Sudoku (Map Square Value)  deriving (Monoid)
 instance Show Sudoku where
    show (Sudoku bs) = digits
@@ -83,7 +89,9 @@ instance Show Sudoku where
                >>>concatMap (\x -> case lookup (Square x) bs of
                               Nothing -> "."
                               Just x -> show x
-                            ))
+                            )
+               >>>intercalateThrees ' ')
+           & intercalateThrees ""
            & unlines
 
 
@@ -191,6 +199,38 @@ instance (Game m, GSpace m ~ sq, GPiece m ~ v, View sq x, Ord x)
           r2 <- foldr const mempty . lookup (view x) <$> get
           return $ opts `intersection` r2
 
+
+placeOnly :: (View sq x, Game m, sq ~ GSpace m,  Ord x)
+        => Proxy x -> Only sq x m a -> m a
+placeOnly Proxy (Only t) = t 
+
+newtype Only sq x m a = Only (m a)
+   deriving (Functor,Applicative,Alternative,
+             Monad,MonadPlus)
+instance MonadTrans (Only sq x) where lift = Only
+instance (Ord x, Game m, sq~ GSpace m, View sq x) => Game (Only sq x m) where
+    type GameBoard (Only sq x m) = GameBoard m
+    nextplays = do
+        sqs <- setToList <$> open
+        opts <- mapM (\x -> fmap (((,x)<$>).setToList) $ options x) sqs 
+
+        let bigmap :: Map x [(GPiece m,sq)]
+            bigmap = F.concat opts
+                    & map (view.snd &&& return @[])
+                    & F.foldr (uncurry $ insertWith (++)) mempty
+
+            filteruniques :: Ord a => [(a,b)]  -> [(a,b)]
+            filteruniques = map (second Just)
+                    >>> F.foldr (uncurry $ insertWith (\_ _ -> Nothing)) mempty
+                    >>> mapToList   @(Map _ _)
+                    >>> map (\(a,b)->(a,)<$>b) -- there must be a standard function
+                    >>> catMaybes
+
+        return $ fmap filteruniques bigmap
+               & mapToList
+               & map snd
+               & concat
+               & map (uncurry . flip . curry $ id)
 
 
 newtype MultiContainer m a = MC (m a)

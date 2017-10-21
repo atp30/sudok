@@ -150,7 +150,13 @@ instance (Board b) => Game (BoardGame b) where
 makeGame :: ( Game m, Board b, b ~ GameBoard m ) => b -> m [Move b] 
 makeGame b = setUp b >> raise id >> sequenceMoves 
 
+
+-- Helper Type - for logging performance
+-- Can be used to assess difficulty of sudokus
+---------------------------------------------
+
 newtype CountSet a = CountSet (Map a Int) deriving (Read)
+
 csToList :: Ord a => CountSet a -> [(a,Int)]
 csToList (CountSet a) = mapToList a
 

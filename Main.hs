@@ -35,7 +35,7 @@ main = interact (   read @Sudoku
                 >>> exactlyOnce views
                 >>> removePlayed
                 >>> execGames
-                >>> first (tshow . foldr const emptyBoard)
+                >>> first (unlines . map ((++"\n\n").tshow))
                 >>> uncurry (++)
                 >>> unpack
                  )
@@ -114,14 +114,26 @@ instance Board Sudoku where
     emptyBoard = Sudoku mempty
 
 
-data View = Box (Int,Int) | Row Digit | Column Digit deriving (Eq,Ord,Show)
+data View = Box (Int,Int) | Row Digit | Column Digit | SWNE | NWSE deriving (Eq,Ord,Show)
 
 box, row, column :: Square -> View
 box     (Square (Digit x, Digit y)) = Box ((x-1)`div`3,(y-1)`div`3)
 row     (Square (x,_))              = Row x
 column  (Square (_,y))              = Column y
 
+
 views :: Square -> [View]
 views x = [box x,row x,column x]
+
+
+-- TOOLS FOR DIAGONAL SUDOKU !
+-- add an additional value to the view restrictions
+
+diagonal :: Square -> [View]
+diagonal (Square (Digit x,Digit y)) = (guard (x==y)   >>return NWSE)
+                                   ++ (guard (x+y==10)>>return SWNE)
+
+diagonalviews :: Square -> [View]
+diagonalviews x = views x ++ diagonal x
 
 

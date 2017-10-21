@@ -39,3 +39,7 @@ Currently, `test1.txt` and `test2.txt` are solved entirely deterministically.
 `very_hard.txt` requires trial and error. I am uncertain about the others,
 although it seems as though some trial and error may be used, based on times.
 
+test1.txt and test2.txt are sourced from [sudopedia](http://sudopedia.enjoysudoku.com/Test_Cases.html)
+and licensed under the GNU FDL.
+
+the wiki* tests are sourced from wikipedia

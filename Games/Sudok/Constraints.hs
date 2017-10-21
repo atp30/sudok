@@ -8,19 +8,27 @@
     FlexibleContexts,
     GeneralizedNewtypeDeriving,
     ExplicitForAll,
-    TupleSections
+    TupleSections,
+    TypeApplications,
+    OverloadedStrings
+
 #-}
 
 module Games.Sudok.Constraints (
-       Board,Space,Piece,Move,serialise,playBoard,spaces,pieces,
-       Game,GameBoard,raise,options,updates,nextplays,open,localSetup,
-       makeGame, emptyBoard, runGame, execGame, lose, won,
+       Board, Space, Piece, Move, serialise, playBoard, boardMoves,
+       GSpace, GPiece,
+       Game, GameBoard, raise, options, updates, nextplays,  localSetup,
+       makeGame, emptyBoard, runGame, execGames, lose, won, log, playName,
        BoardGame(BoardGame),Failable
        ) where
 
-import ClassyPrelude
+import ClassyPrelude hiding (log)
 import Control.Monad.State
+import Control.Monad.Writer
+import Control.Monad.List
 
+import qualified Data.Text as T
+import Data.Function ((&))
 -- Games
 --------
 type Move b = (Space b,Piece b)
@@ -31,29 +39,28 @@ class (Eq (Space b),Eq (Piece b), Ord (Space b), Ord (Piece b))
    type Piece b :: *
    serialise :: b -> [Move b]
    playBoard :: Move b -> b -> b
-   spaces :: b -> Set (Space b)
-   pieces :: b -> Set (Piece b)
+   boardMoves :: b -> Map (Space b) (Set (Piece b))
    emptyBoard :: b
 
 type StackedGame t m1 m =
     (m ~ (t m1), MonadTrans t, Game m1, Game (t m1),
     GameBoard (t m1) ~ GameBoard m1)
 
+type GSpace m = Space (GameBoard m)
+type GPiece m = Piece (GameBoard m)
 -- The Game Class
 class (MonadPlus m, Board (GameBoard m)) => Game m where
    type GameBoard m :: *
 
+   playName :: m Text
+   playName = return "Unnamed"
+   
    localSetup :: m ()
    localSetup = return ()
 
-   options :: Space (GameBoard m) -> m (Set (Piece (GameBoard m)))
-   default options :: StackedGame t m1 m =>
-              Space (GameBoard m) -> m (Set (Piece (GameBoard m)))
-   options = lift . options
-
-   open :: m (Set (Space (GameBoard m)))
-   default open :: StackedGame t m1 m => m (Set (Space (GameBoard m)))
-   open = lift open
+   options :: m (Map  (GSpace m) (Set (GPiece m)))
+   default options :: StackedGame t m1 m => m (Map  (GSpace m) (Set (GPiece m)))
+   options = lift options
 
    -- updates should never call a lifted function
    updates :: [Move (GameBoard m)] -> m ()
@@ -65,6 +72,10 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    -- The Two functions below are not exported!
    -- Play is internal - is not to be exported. Therefore, all Instances
    -- Either need to be monad transformers, or defined via Board
+   log :: Text -> m ()
+   default log :: StackedGame t m1 m => Text -> m ()
+   log = lift . log
+
    setUp :: (GameBoard m) -> m ()
    default setUp :: StackedGame t m1 m => (GameBoard m) -> m()
    setUp xs = lift (setUp xs) >> localSetup >> updates (serialise xs) >> return ()
@@ -76,7 +87,7 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    play :: Move (GameBoard m) -> m ()
    default play :: StackedGame t m1 m => Move (GameBoard m) -> m ()
    play x = liftM2 mappend (lift $ play x) (updates $ return x) 
-   
+    
    sequenceMoves :: m [Move (GameBoard m)]
    default sequenceMoves :: StackedGame t m1 m =>
             m [Move (GameBoard m)]
@@ -84,45 +95,52 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
      w <- won
      if w then return []
      else do
-            plays <- nextplays
-            xs <- reverse <$> foldl' (\moves nextmove -> do
-                                  w <- won
-                                  if w then return []
-                                       else do play nextmove 
-                                               fmap (nextmove:) moves)
-                              (reverse <$> lift sequenceMoves) 
-                              plays
-            if null xs then return xs
-                       else (xs++)<$>sequenceMoves
+            x1s <- lift sequenceMoves
+            updates x1s
+            w <- won
+            if w then return []
+            else do
+              plays <- nextplays
+              xs <- reverse <$> foldl' (\moves nextmove -> do
+                                    w <- won
+                                    if w then return []
+                                        else do playName >>= log
+                                                play nextmove 
+                                                fmap (nextmove:) moves)
+                                (return []) 
+                                plays
+              if null xs then return (x1s++xs)
+                         else ((x1s++xs)++)<$>sequenceMoves
      
    lose :: Monoid a =>  m a
    default lose :: (StackedGame t m1 m, Monoid a) => m a
    lose = lift lose  
 
 
+
+
 won :: Game m => m Bool
-won = null <$> open
+won = null  <$> options
 
 -- Promoting a Board to a Game
 ------------------------------
 type Failable m = (MonadPlus m, Foldable m)
 
-newtype BoardGame b m a = BoardGame (StateT b m a)
+newtype BoardGame b a = BoardGame (StateT b (ListT (Writer (CountSet Text))) a)
         deriving (Functor,Applicative,Monad,Alternative, MonadPlus)
 
-runGame :: forall m . forall b . forall a . (Monad m, Board b) =>  BoardGame b m a -> m (a,b) 
-runGame (BoardGame t) = runStateT t emptyBoard
+runGame :: Board b =>  BoardGame b a -> ([(a,b)],CountSet Text) 
+runGame (BoardGame t) = runWriter $ runListT $ runStateT t emptyBoard
 
-execGame :: forall m . forall b . forall a . (Monad m, Board b) =>  BoardGame b m a -> m b
-execGame (BoardGame t) = execStateT t emptyBoard
+execGames :: Board b =>  BoardGame b a -> ([b],Text)
+execGames (BoardGame t) = second tshow $ runWriter $ runListT $ execStateT t emptyBoard
 
-instance (Board b, Failable m) => Game (BoardGame b m) where
-         type GameBoard (BoardGame b m) = b
-             
+instance (Board b) => Game (BoardGame b) where
+         type GameBoard (BoardGame b) = b
+         log           = BoardGame . lift . lift . tell . csSingleton
          setUp b       = BoardGame $ put b
          raise f       = BoardGame $ f <$> get
-         open          = raise spaces
-         options _     = raise pieces
+         options       = raise boardMoves
          updates xs    = BoardGame (mapM (modify.playBoard) xs) >> return ()
          play          = updates . return
          sequenceMoves = return []
@@ -130,4 +148,27 @@ instance (Board b, Failable m) => Game (BoardGame b m) where
 
          
 makeGame :: ( Game m, Board b, b ~ GameBoard m ) => b -> m [Move b] 
-makeGame b = setUp b >> (raise id) >> sequenceMoves 
+makeGame b = setUp b >> raise id >> sequenceMoves 
+
+newtype CountSet a = CountSet (Map a Int) deriving (Read)
+csToList :: Ord a => CountSet a -> [(a,Int)]
+csToList (CountSet a) = mapToList a
+
+csSingleton :: Ord a => a -> CountSet a
+csSingleton a = CountSet $ singletonMap a 1
+
+instance Ord a => Monoid (CountSet a) where
+   mempty = CountSet mempty
+   mappend (CountSet a) (CountSet b) =
+      CountSet $ unionWith (+) a b
+
+pad :: Int -> String -> String 
+pad n t = t ++ (replicate (n-length t) ' ')
+
+instance (MonoFoldable a, Element a ~ Char, Ord a) => Show (CountSet a) where 
+   show (CountSet a) = a
+     & mapToList
+     & sortOn snd
+     & reverse
+     & map (\(a,b) -> pad 30 (unpack a++":")++" "++show b)
+     & unlines

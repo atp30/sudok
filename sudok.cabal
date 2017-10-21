@@ -17,15 +17,15 @@ cabal-version:       >=1.10
 
 executable sudoku
   main-is:             Main.hs
-  other-modules:       Games.Sudok.Constraints
+  other-modules:       Games.Sudok.Constraints,
+                       Games.Sudok.SetCover
   -- other-extensions:    
   build-depends:       base,
                        classy-prelude,
-                       array,
-                       lens,
                        mtl,
                        transformers,
-                       mono-traversable
+                       text,
+                       containers
 
   -- hs-source-dirs:      
   default-language:    Haskell2010

@@ -43,3 +43,4 @@ test1.txt and test2.txt are sourced from [sudopedia](http://sudopedia.enjoysudok
 and licensed under the GNU FDL.
 
 the wiki* tests are sourced from wikipedia
+

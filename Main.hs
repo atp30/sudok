@@ -15,7 +15,7 @@ module Main where
 import Games.Sudok.Constraints
 import Games.Sudok.SetCover
 
-import Data.Proxy
+import Data.List.Split
 import ClassyPrelude
 -- TODO get rid of head
 import Prelude (readsPrec,read,interact)
@@ -29,15 +29,15 @@ import Control.Arrow hiding (first,second)
 import Data.Function ((&))
 
 main :: IO ()
-main = interact (   read @Sudoku
-                >>> makeGame 
-                >>> makeGuesses
-                >>> exactlyOnce views
-                >>> removePlayed
-                >>> execGames
-                >>> first (unlines . map ((++"\n\n").tshow))
-                >>> uncurry (++)
-                >>> unpack
+main = interact ( readSudokus
+                  >>> map ( makeGame 
+                        >>> removePlayed . exactlyOnce views . makeGuesses
+                        >>> execGames
+                        >>> (foldr (const.(++"\n").show) "Failure!"  *** unpack)
+                        >>> uncurry (++)
+                        >>> (++"\n------------\n")
+                            )
+                  >>> unlines
                  )
 
 -- Basic Digit Type -- represents numbers from 1 to 9
@@ -94,12 +94,17 @@ instance Show Sudoku where
            & unlines
 
 
+readSudokus :: String -> [Sudoku]
+readSudokus xs = filter (`elem`('.':'0':['1'..'9'])) xs
+               & chunksOf 81
+               & map read
+
 -- Not a well behaved instance - messes with the remaining string
 instance Read Sudoku where
-   readsPrec _ xs = filter (`elem`('.':['1'..'9'])) xs
+   readsPrec _ xs = filter (`elem`('.':'0':['1'..'9'])) xs
                   & splitAt 81
                   & first ( zip (Square <$> liftM2 (,) digits digits)
-                        >>> filter ((/='.').snd)
+                        >>> filter (not.(`elem` ['.','0']).snd)
                         >>> map (second (Value .read.return))
                         >>> mapFromList
                         >>> Sudoku)
@@ -114,10 +119,10 @@ instance Board Sudoku where
     emptyBoard = Sudoku mempty
 
 
-data View = Box (Int,Int) | Row Digit | Column Digit | SWNE | NWSE deriving (Eq,Ord,Show)
+data View = Box !Int !Int | Row !Digit | Column !Digit | SWNE | NWSE deriving (Eq,Ord,Show)
 
 box, row, column :: Square -> View
-box     (Square (Digit x, Digit y)) = Box ((x-1)`div`3,(y-1)`div`3)
+box     (Square (Digit x, Digit y)) = Box ((x-1)`div`3) ((y-1)`div`3)
 row     (Square (x,_))              = Row x
 column  (Square (_,y))              = Column y
 

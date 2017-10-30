@@ -13,12 +13,14 @@ LANGUAGE
 module Games.Sudok.SetCover where
 
 import Games.Sudok.Constraints
-import ClassyPrelude hiding (log)
+import ClassyPrelude hiding (log,groupBy,Map)
 
-import qualified Data.Foldable as F
+import Data.Map.Strict (Map)
 import qualified Data.Map as M
 
-import Control.Monad.State (StateT, MonadState, get, put, modify, evalStateT)
+import qualified Data.Foldable as F
+
+import Control.Monad.State.Strict (StateT, MonadState, get, put, modify, evalStateT, execState)
 import Data.Function ((&))
 import Control.Arrow ((>>>))
 
@@ -28,6 +30,14 @@ fhead = foldr const mempty
 
 mapFromFoldableWith :: (Foldable f, Ord b) => (a -> a -> a) -> f (b,a) -> Map b a
 mapFromFoldableWith f = F.foldl' (flip . uncurry $ insertWith f) mempty 
+
+groupBy :: Ord b => (a -> [b]) -> [a] -> [[a]]
+groupBy f xs =
+     let pairs = do
+            x <- xs
+            v <- f x
+            return (v,[x])
+     in map snd . mapToList $ mapFromFoldableWith (++) pairs
 
 -- 1. Remove Options after a piece has been played
 --------------------------------------------------
@@ -67,6 +77,14 @@ forbidTwice :: (Game m, sq~GSpace m, v ~ GPiece m, Ord x) =>
             (sq -> [x]) -> ForbidTwice x sq v m a -> m a
 forbidTwice f (ForbidTwice x) = evalStateT (runReaderT x f) mempty
 
+filterNextPlays :: Game m => m [(GSpace m,GPiece m)]
+filterNextPlays = 
+       do o  <- options
+          return $ o
+                 & mapToList 
+                 & filter ((==1).length.snd)
+                 & concatMap (\(a,b)-> (a,)<$>foldr (const.return) [] b)
+
 instance (Game m, GSpace m ~ sq, GPiece m ~ v, Ord x, Show x, Show sq, Show v) =>
          Game (ForbidTwice x sq v m) where
    type GameBoard (ForbidTwice x sq v m) = GameBoard m
@@ -90,12 +108,7 @@ instance (Game m, GSpace m ~ sq, GPiece m ~ v, Ord x, Show x, Show sq, Show v) =
             guard (v `elem` x)
             ForbidTwice . modify $ adjustMap (deleteSet v) s
 
-   nextplays =
-       do o  <- options
-          return $ o
-                 & mapToList 
-                 & filter ((==1).length.snd)
-                 & concatMap (\(a,b)-> (a,)<$>foldr (const.return) [] b)
+   nextplays = filterNextPlays
 
    options = do
        f <- ForbidTwice ask
@@ -147,8 +160,61 @@ instance (Ord x, Game m, sq~ GSpace m, Show sq, Show v, Show x, v ~ GPiece m)
         return bigmap
 
 exactlyOnce :: (Ord x, Game m, sq ~ GSpace m, v ~ GPiece m, Show sq, Show x, Show v)
-            => (sq -> [x]) -> RequireEach sq v x (ForbidTwice x sq v m) a -> m a
-exactlyOnce f = requireEach f >>> forbidTwice f
+            => (sq -> [x]) -> FilterMultiOptions sq v x (
+                              RequireEach sq v x (
+                              ForbidTwice x sq v m)) a -> m a
+exactlyOnce f = filterMultiOptions f >>> requireEach f >>> forbidTwice f
+
+-- RemoveDuplicates!
+-- If there are N cells which monopolise N values, then 
+-- those values cannot go anywhere else
+
+-- This works, but is damned inefficient
+ 
+filterMultiOptions :: (Game m, sq~GSpace m, v ~ GPiece m, Ord x) =>
+            (sq -> [x]) -> FilterMultiOptions sq v x m a -> m a
+filterMultiOptions f (FilterMultiOptions x) = runReaderT x f
+
+newtype FilterMultiOptions sq v x m a = FilterMultiOptions (ReaderT (sq -> [x]) m a)
+   deriving (Functor, Applicative, Alternative, Monad, MonadPlus)
+
+instance MonadTrans (FilterMultiOptions sq v x)
+    where lift = FilterMultiOptions . lift
+
+instance (Ord x, Game m, sq~ GSpace m, Show sq, Show v, Show x, v ~ GPiece m)
+     => Game (FilterMultiOptions sq v x m) where
+    type GameBoard (FilterMultiOptions sq v x m) = GameBoard m
+    playName = return "Filter Multi Options"
+    options = do
+      o <- lift options
+      v <- FilterMultiOptions ask
+      let maps :: [[(sq,Set v)]]
+          maps = groupBy (v.fst) (mapToList o)
+
+          newoptions :: [(sq,Set v)]
+          newoptions = flip concatMap maps $ \xs ->
+                    xs & map (uncurry (flip (,)) >>> second  (return @[]))
+                       & mapFromFoldableWith (++)
+                       & mapToList
+                       & filter (uncurry (==) . (length *** length))
+                       & map (\(st,vals) -> do
+                                (x,opts) <- xs
+                                guard $ not (x `elem` vals) 
+                                return (x,opts `difference` st)
+                                )
+                       & concat
+                       
+            -- flip execState xs $ do
+              -- forM_ (groupBy (return.snd) xs) $ \x@((_,y):_) ->
+              --   if length x == length y
+              --   then modify $ map (\a ->
+              --           if a `elem` x
+              --               then a
+              --               else second (`difference` y) a)
+              --   else return ()
+      return $ foldl' (\m (k,val) -> insertWith (intersection) k val m) o newoptions
+
+    nextplays = filterNextPlays
 
 -- Make Guesses
 ---------------
@@ -174,7 +240,7 @@ instance (Game m, sq ~ GSpace m, v ~ GPiece m, Show sq, Show v)
                 [] -> do -- NEED TO CHECK IF WE'VE WON
                       (a,y) <- foldr (const.return) mzero opt3s
                       foldr (mplus.return) mzero $ (return.(a,)) <$> setToList y
-                xs  -> do
+                xs  -> 
                     return $  concatMap (\(x,y)->(x,)<$>setToList y) xs 
 
 makeGuesses :: Guess sq v m a -> m a

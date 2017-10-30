@@ -22,15 +22,20 @@ module Games.Sudok.Constraints (
        BoardGame(BoardGame),Failable
        ) where
 
-import ClassyPrelude hiding (log)
-import Control.Monad.State
-import Control.Monad.Writer
-import Control.Monad.List
+import ClassyPrelude hiding (log,Map)
+import Data.Map.Strict (Map)
+import Control.Monad.State.Strict
+import Control.Monad.Writer.Strict
+import ListT (ListT)
+import qualified ListT as LT
+-- import Control.Monad.List
 
 import qualified Data.Text as T
 import Data.Function ((&))
 -- Games
 --------
+type List a = [a]
+
 type Move b = (Space b,Piece b)
 
 class (Eq (Space b),Eq (Piece b), Ord (Space b), Ord (Piece b))
@@ -58,10 +63,6 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    localSetup :: m ()
    localSetup = return ()
 
-   options :: m (Map  (GSpace m) (Set (GPiece m)))
-   default options :: StackedGame t m1 m => m (Map  (GSpace m) (Set (GPiece m)))
-   options = lift options
-
    -- updates should never call a lifted function
    updates :: [Move (GameBoard m)] -> m ()
    updates _ = return ()
@@ -69,7 +70,12 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    nextplays :: m [Move (GameBoard m)] 
    nextplays = return []
 
-   -- The Two functions below are not exported!
+   options :: m (Map  (GSpace m) (Set (GPiece m)))
+   default options :: StackedGame t m1 m
+                   => m (Map  (GSpace m) (Set (GPiece m)))
+   options = lift options
+
+   -- The functions below are not exported!
    -- Play is internal - is not to be exported. Therefore, all Instances
    -- Either need to be monad transformers, or defined via Board
    log :: Text -> m ()
@@ -88,9 +94,9 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    default play :: StackedGame t m1 m => Move (GameBoard m) -> m ()
    play x = liftM2 mappend (lift $ play x) (updates $ return x) 
     
-   sequenceMoves :: m [Move (GameBoard m)]
+   sequenceMoves :: m (List (Move (GameBoard m)))
    default sequenceMoves :: StackedGame t m1 m =>
-            m [Move (GameBoard m)]
+            m (List (Move (GameBoard m)))
    sequenceMoves = do
      w <- won
      if w then return []
@@ -98,12 +104,12 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
             x1s <- lift sequenceMoves
             updates x1s
             w <- won
-            if w then return []
+            if w then return  []
             else do
               plays <- nextplays
               xs <- reverse <$> foldl' (\moves nextmove -> do
                                     w <- won
-                                    if w then return []
+                                    if w then return mempty
                                         else do playName >>= log
                                                 play nextmove 
                                                 fmap (nextmove:) moves)
@@ -117,8 +123,6 @@ class (MonadPlus m, Board (GameBoard m)) => Game m where
    lose = lift lose  
 
 
-
-
 won :: Game m => m Bool
 won = null  <$> options
 
@@ -129,17 +133,17 @@ type Failable m = (MonadPlus m, Foldable m)
 newtype BoardGame b a = BoardGame (StateT b (ListT (Writer (CountSet Text))) a)
         deriving (Functor,Applicative,Monad,Alternative, MonadPlus)
 
-runGame :: Board b =>  BoardGame b a -> ([(a,b)],CountSet Text) 
-runGame (BoardGame t) = runWriter $ runListT $ runStateT t emptyBoard
+runGame :: Board b =>  BoardGame b a -> (Maybe (a,b),CountSet Text) 
+runGame (BoardGame t) = runWriter $ LT.head $ runStateT t emptyBoard
 
-execGames :: Board b =>  BoardGame b a -> ([b],Text)
-execGames (BoardGame t) = second tshow $ runWriter $ runListT $ execStateT t emptyBoard
+execGames :: Board b =>  BoardGame b a -> (Maybe b,Text)
+execGames (BoardGame t) = second tshow $ runWriter $ LT.head $ execStateT t emptyBoard
 
 instance (Board b) => Game (BoardGame b) where
          type GameBoard (BoardGame b) = b
          log           = BoardGame . lift . lift . tell . csSingleton
-         setUp b       = BoardGame $ put b
-         raise f       = BoardGame $ f <$> get
+         setUp   b     = BoardGame $ put b
+         raise   f     = BoardGame $ f <$> get
          options       = raise boardMoves
          updates xs    = BoardGame (mapM (modify.playBoard) xs) >> return ()
          play          = updates . return

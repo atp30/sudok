@@ -19,7 +19,8 @@ executable sudoku
   main-is:             Main.hs
   other-modules:       Games.Sudok.Constraints,
                        Games.Sudok.SetCover,
-                       Control.Strat
+                       Control.Strat,
+                       Data.Pairset
   -- other-extensions:    
   build-depends:       base,
                        classy-prelude,

@@ -1,19 +1,22 @@
 {-#
 LANGUAGE NoImplicitPrelude,
-         TypeFamilies
+         TypeFamilies,
+         TupleSections
 #-}
 
 module Data.PairSet (
   PairSet,
   left,      right,        
   lefts,     rights,       
-  leftElem,  rightElem
+  leftElem,  rightElem,
   elem,      elems,        
   lookRight, lookLeft,     
-  delete,    fromList
+  delete,    fromList,
   switch,    insert,       
   psUnion,   psDifference, 
-  psIntersection
+  psIntersection,
+  biRemove,
+  removeLeft, removeRight
   ) where
 
 import Prelude (Ord,Bool, (.), ($), uncurry, flip, const, not, Show, show, (++))
@@ -149,11 +152,28 @@ rightElem b m = leftElem b (switch m)
 -- filter :: (Ord a, Ord b) => ((a,b)->Bool) -> PairSet a b -> PairSet a b
 -- filter f (PairSet a b) = undefined
 
+-- REMOVE WHEN A PAIR OF CONIDITIONS IS MET
 biRemove :: (Ord a, Ord b) => (a -> Bool) -> (b -> Bool) -> PairSet a b -> PairSet a b
 biRemove fa fb (PairSet l r) =
   let ax = S.filter fa (M.keysSet l)
       bx = S.filter fb (M.keysSet r)
-      amap = M.mapWithKey (\k v -> if fa k then v `difference` bx else v) l
-      bmap = M.mapWithKey (\k v -> if fb k then v `difference` ax else v) r
+      amap = remwhen fa bx l
+      bmap = remwhen fb ax r
   in PairSet amap bmap
 
+
+remwhen f x m = flip M.mapMaybeWithKey m $
+        \k v -> let newset = v `difference` x
+                in if f k then if null newset then Nothing
+                                                else Just newset
+                            else Just v
+
+removeLeft :: (Ord a,Ord b) => Set a -> PairSet a b -> PairSet a b
+removeLeft x (PairSet l r) =
+   PairSet (M.difference l $ M.fromList $ (,())<$> S.toList x) $
+             flip M.mapMaybe r
+                   (\a -> let v = a `S.difference`  x
+                          in if null v then Nothing else Just v)
+                                
+
+removeRight f ps = removeLeft f (switch ps)
